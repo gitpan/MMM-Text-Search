@@ -1,13 +1,21 @@
 
+
+
 chomp ( my $host = qx/hostname/ );
 
-#$dirs      =         [ "/usr/doc"  ];  
+$dirs      =         [ "/usr/src"  ];  
 
-$dirs      =     	[ "/usr"  ];  
-$filemask  =		'(?i)\.(htm.?|txt)$|^README$';
+#$dirs      =     	[ "/opt/ACE_wrappers/"  ];  
+#$filemask  =		'(?i)\.(htm.?|txt)$|^README$|\.\d$|\.cpp$|\.h|\.i$';
+
+$filemask  =		'(?i)\.(txt)$|^README$';
+#$filemask  =		'(?i)\.(htm)l?$';
+
 $urls 	= 	[ "http://$host/" ];
 
-$indexfile =  	"./.test_pl.db";
+
+mkdir "./.index";
+$indexfile =  	"./.index/test_pl.db";
 
 $SIG{INT} = sub { warn "exiting\n"; exit };
 
@@ -16,9 +24,21 @@ if (-f "./custom_test.pl" ) {
 	require "./custom_test.pl";
 }
 
+
+my $index_anyway = 0;
+
+if ( -f $indexfile  ) 
+{
+	print "************** Test index anyway? ****************\n";
+	my $c = lc scalar <STDIN>;
+	$index_anyway = ( $c =~ /y/ );
+	print $index_anyway,"\n";
+
+}
+
 use MMM::Text::Search;
 
-if ( not -f $indexfile  ) {
+if ( ( not -f $indexfile)  || $index_anyway ) {
 	print "*** Hello! Thanks for using this module.\n";
 	print "*** Please, choose which test you want to perform:\n";
 	print "[1] index all files matching  /$filemask/  \n";
@@ -34,6 +54,8 @@ if ( not -f $indexfile  ) {
 		$dirs = [];	
 	}
 	else { die "Bad choice\n"; }
+
+#	my $filereader = new MyFileReader;
 	
 	my $search = new MMM::Text::Search { 
 		IndexDB 	=> $indexfile,
@@ -42,7 +64,10 @@ if ( not -f $indexfile  ) {
 		IgnoreLimit	=> 1/4,
 		Verbose 	=> 1,
 		URLs		=> $urls,	
-	
+#		FileReader	=> $filereader
+
+		UseInodeAsKey => 1,
+		NoReset => 1
 	};
 
 	
@@ -86,13 +111,13 @@ Score            Filename                          Title
 @<<@<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<@<<<<<<<<<<<<<<<<<<<<<<<<<<<
 $score,$filename,                                   $title
 .
-		for $k( sort { $a->{score} <=>  $b->{score} } @{ $result->{files} } ) {
-			$filename = $k->{filename};
+		for $k( sort { $a->{score} <=>  $b->{score} } @{ $result->{entries} } ) {
+			$filename = $k->{location};
 			$score = $k->{score};
 			$title = $k->{title};
 			write;
 		}
-		my $count = int  @{ $result->{files} };
+		my $count = int  @{ $result->{entries} };
 		print "-- files found: $count \n";
 		print "-- ignored words: ", join(", ", @{ $result->{ignored} }) ,"\n";
 	} else {
@@ -113,6 +138,36 @@ print "ok 1\n";
 
 BEGIN { $| = 1; print "1..1\n"; }
 END {print "not ok 1\n" unless $loaded;}
+
+
+
+
+
+package MyFileReader;
+
+sub new 
+{
+	return bless { };	
+}
+
+sub read
+{
+	my $path = shift;
+	local $/;
+	undef $/;
+	open F, $path;
+	my $text =  <F>;
+	close F;
+	return $text;
+}
+
+
+
+
+
+
+
+
 
 __END__
 #		FileMask	=> '(?i)\.(\d+\w*|n)$',

@@ -1,7 +1,8 @@
 
 package MMM::Text::Search;
+use File::Copy;
 
-#$Id: Search.pm,v 1.43 1999/11/24 18:46:27 maxim Exp $
+#$Id: Search.pm,v 1.50 2004/12/13 18:45:15 maxim Exp $
 use strict;
 use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $verbose_flag  );
 require Exporter;
@@ -9,7 +10,7 @@ require AutoLoader;
 @ISA = qw(Exporter AutoLoader);
 @EXPORT = qw(
 );
-$VERSION = '0.06';
+$VERSION = '0.07';
 
 #
 # Perl module for indexing and searching text files and web pages.
@@ -63,8 +64,8 @@ sub new { 			 # constructor!  (see the docs for usage [sorry, there're no docs ]
 	my $urls 	= ( ref($opturls) eq "ARRAY" ) ? $opturls : [ ];
 	my $level	= int $opt->{Level};
 	
-	my $filesdbpath = $indexdbpath;
-	$filesdbpath =~ s/(\.db)*$/\-files.db/;
+	my $locationsdbpath = $indexdbpath;
+	$locationsdbpath =~ s/(\.db)*$/\-locations.db/;
 	my $titlesdbpath = $indexdbpath;
 	$titlesdbpath =~ s/(\.db)*$/\-titles.db/;
 	
@@ -73,7 +74,7 @@ sub new { 			 # constructor!  (see the docs for usage [sorry, there're no docs ]
 
 	my $self = {
 		indexdbpath 	=> $indexdbpath,
-		filesdbpath 	=> $filesdbpath,
+		locationsdbpath 	=> $locationsdbpath,
 		titlesdbpath	=> $titlesdbpath,
 		filemask 	=> length($filemask) ? qr/$filemask/ : undef,
 		dirs 		=> $dirs,
@@ -83,6 +84,9 @@ sub new { 			 # constructor!  (see the docs for usage [sorry, there're no docs ]
 		urls		=> $urls,
 		level		=> $level,
 		url_exclude	=> $opt->{UrlExludeMask} || "(?i).*\.(zip|exe|gz|arj|bin|hqx)", 
+		file_reader     => $opt->{FileReader},
+		use_inode       => $opt->{UseInodeAsKey},
+		no_reset        => $opt->{UseInodeAsKey} && $opt->{NoReset}
 		
 	};
 	DEBUG("filemask=$filemask, indexfile=$indexdbpath, ignorelimit=$self->{ignorelimit}\n");
@@ -96,7 +100,7 @@ sub _add_keys_to_match_hash {
 # extract file-codes from $keys and update corresponding $hash elements (score)
 	my ($keys, $hash) = @_;
 	my $key;
-	foreach $key ( unpack("n*",$keys) ) { 
+	foreach $key ( unpack("N*",$keys) ) { 
 #		DEBUG($key, " ");
 		# ignored words (stop-words) only include file-id 0 (see FlushCache() below)
 		return 0 if  $key == 0 ; 
@@ -124,17 +128,17 @@ sub advanced_query {
 	my $self = shift;
 	my $expr = shift;
 	my $indexdbpath= $self->{indexdbpath};
-	my $filesdbpath = $self->{filesdbpath};
+	my $locationsdbpath = $self->{locationsdbpath};
 	my $titlesdbpath = $self->{titlesdbpath};
 	my %indexdb;
-	my %filesdb;
+	my %locationsdb;
 	my %titlesdb;
 	return undef unless (-f $indexdbpath && -r _);
-	return undef unless (-f $filesdbpath && -r _);
+	return undef unless (-f $locationsdbpath && -r _);
 	return undef unless (-f $titlesdbpath && -r _);
 	return undef unless	
 		tie_hash(\%indexdb,$indexdbpath, O_RDONLY ) &&
-		 tie_hash(\%filesdb,$filesdbpath, O_RDONLY ) &&
+		 tie_hash(\%locationsdb,$locationsdbpath, O_RDONLY ) &&
 		  tie_hash(\%titlesdb,$titlesdbpath, O_RDONLY );
 	my @ignored = ();
 	my @words = ();
@@ -150,10 +154,10 @@ sub advanced_query {
 		$verbose_flag = $verbose_flag_tmp;
 		return undef;
 	}
-	my $result =  _make_result_hash($match,\%filesdb, \%titlesdb, \@words, \@ignored);
+	my $result =  _make_result_hash($match,\%locationsdb, \%titlesdb, \@words, \@ignored);
 	
 	untie(%indexdb);
-	untie(%filesdb);
+	untie(%locationsdb);
 	untie(%titlesdb);
 	$verbose_flag = $verbose_flag_tmp;
 	return $result;
@@ -301,17 +305,17 @@ sub query { 	 # simple query....  	altavista +/- prefixes are recognized...
 		 #			globbing implicitly discards +/- prefix (it's a BUG!!!)
 	my $self = shift;
 	my $indexdbpath= $self->{indexdbpath};
-	my $filesdbpath = $self->{filesdbpath};
+	my $locationsdbpath = $self->{locationsdbpath};
 	my $titlesdbpath = $self->{titlesdbpath};
 	my %indexdb;
-	my %filesdb;
+	my %locationsdb;
 	my %titlesdb;
 	return undef unless (-f $indexdbpath && -r _);
-	return undef unless (-f $filesdbpath && -r _);
+	return undef unless (-f $locationsdbpath && -r _);
 	return undef unless (-f $titlesdbpath && -r _);
 	return undef unless	
 		tie_hash(\%indexdb,$indexdbpath, O_RDONLY ) &&
-		tie_hash(\%filesdb,$filesdbpath, O_RDONLY ) &&
+		tie_hash(\%locationsdb,$locationsdbpath, O_RDONLY ) &&
 		tie_hash(\%titlesdb,$titlesdbpath, O_RDONLY );
 	my %matches;
 	my %limit;
@@ -369,9 +373,9 @@ sub query { 	 # simple query....  	altavista +/- prefixes are recognized...
 	for $key(keys %exclude) {
 		delete $matches{$key};
 	}
-	my $result =  _make_result_hash(\%matches,\%filesdb, \%titlesdb, \@words, \@ignored);
+	my $result =  _make_result_hash(\%matches,\%locationsdb, \%titlesdb, \@words, \@ignored);
 	untie(%indexdb);
-	untie(%filesdb);
+	untie(%locationsdb);
 	untie(%titlesdb);
 	return $result;
 }
@@ -379,20 +383,20 @@ sub query { 	 # simple query....  	altavista +/- prefixes are recognized...
 
 sub _make_result_hash {
 #            hash-ref  hash-ref   hash-ref    array-ref   array-ref
-	my ( $match,   $filesdb,  $titlesdb,  $words,     $ignored  ) = @_; 
+	my ( $match,   $locationsdb,  $titlesdb,  $words,     $ignored  ) = @_; 
 	my $result = {
 		searched =>  $words,
 		ignored  =>  $ignored,
-		files	 =>  []
+		entries	 =>  []
 	};
 	my $key;
 	foreach $key (keys %$match) {
-		my $ckey = pack("xn",$key);
-  		my $name = $filesdb->{$ckey};
+		my $ckey = pack("xN",$key);
+  		my $name = $locationsdb->{$ckey};
 		my $title = $titlesdb->{$ckey};
 		
-		push @{ $result->{files} }, { 
-			filename => $name,
+		push @{ $result->{entries} }, { 
+			location => $name,
 			score 	 => $match->{$key},
 			title	 => $title
 		};
@@ -450,19 +454,34 @@ MMM::Text::Search - Perl module for indexing and searching text files and web ob
   my $srch = new MMM::Text::Search {	#for indexing...
 	#index main file location...  
 		IndexPath => "/tmp/myindex.db",
-	#local files...
+	#local files... (optional)
 		FileMask  => '(?i)(\.txt|\.htm.?)$',
 		Dirs	  => [ "/usr/doc", "/tmp" ] ,
 		FollowSymLinks => 0|1, (default = 0)
-	#web objects...
+	#web objects... (optional)
 		URLs	  => [ "http://localhost/", ... ],
 		Level	  => recursion-level (0=unlimited)		
 	#common options...		
 		IgnoreLimit =>	0.3,   (default = 2/3)
 		Verbose => 0|1				
   	};
-  	
+  
+  $srch->start_indexing_session();
+	
+  $srch->commit_indexing_session();
+  
+  $srch->index_default_locations();
+        
+  $srch->index_content( { title =>   '...', 
+		    	  content=>  '...', 
+		    	  id =>      '...'  } );
+	 
   $srch->makeindex;
+       (Obsolete.) 
+
+
+	
+	
 
   my $srch = new MMM::Text::Search (  #for searching....
 		  "/tmp/myindex.db", verbose_flag );
@@ -482,19 +501,38 @@ MMM::Text::Search - Perl module for indexing and searching text files and web ob
 =item	*
 Indexing
 
-makeindex() does all the job of indexing. When it's finished
-the following files will have been created 
+When a session is closed the following files will have been created 
 (assuming IndexPath = /path/myindex.db, see constructor):
  
 
-	/path/myindex.db	 word index database
-	/path/myindex-files.db	 filename/URL database
-	/path/myindex-titles.db	 html title database
-	/path/myindex.stopwords	 stop-words list
-	/path/myindex.filelist	 readable list of indexed files/URLs
-	/path/myindex.deadlinks	 broken http links
+	/path/myindex.db	     word index database
+	/path/myindex-locations.db   filename/URL database
+	/path/myindex-titles.db	     html title database
+	/path/myindex.stopwords	     stop-words list
+	/path/myindex.filelist	     readable list of indexed files/URLs
+	/path/myindex.deadlinks	     broken http links
 
 	[... lots of important things missing ... ]
+
+start_indexing_session() starts session.
+	
+commit_indexing_session() commits and closes current session.
+  
+index_default_locations() indexes all files and URLs specified on construction.
+
+index_content() pushes content into indexing engine. 
+Argument must have the following structure
+		
+ { title =>   '...', content=>  '...', id =>      '...'  }
+
+
+makeindex() is obsolete.
+        Equivalent to:
+          $srch->start_indexing_session();
+          $srch->index_default_locations();
+          $srch->commit_indexing_session();
+
+
 
 
 dump_word_stats(\*FH) dumps all words sorted by occurence frequency using
@@ -510,15 +548,15 @@ the following structure:
 	(
 	 ignored  => [ string, string, ... ], # ignored words
 	 searched => [ string, string, ... ], # words searched for
-	 files    => [  hashref, hashref, ... ] # list of files 
-						# or URLs found
+	 entries    => [  hashref, hashref, ... ] # list of records 
+						# found
 	 )
 	
-The 'files' element is a reference to an array of hashes, each having 
+The 'entries' element is a reference to an array of hashes, each having 
 the following structure:
 
 	(
- 	 filename => string,  # file path or http URL
+ 	 location => string,  # file path or URL or anything
 	 score    => number,  # score 
 	 title    => string   # HTML title		 
 	)
@@ -566,28 +604,27 @@ sub dump_word_stats {
 }
 
 
-sub makeindex {
+sub start_indexing_session 
+{
 	my $self = shift;
+	$self->rollback_indexing_session;
 	my $key = 0;
 	my $indexdbpath = $self->{indexdbpath};
-	my $filesdbpath = $self->{filesdbpath};
+	my $locationsdbpath = $self->{locationsdbpath};
 	my $titlesdbpath = $self->{titlesdbpath};
 
-	my $dir;
-	my $dirs 	= $self->{dirs};
-	my $urls	= $self->{urls};
 	my $filemask 	= $self->{filemask};
 	my $keyref = \$key;
 	my $filelistfile = $indexdbpath;
 	$filelistfile =~  s/(\.db)?$/\.filelist/;
 	open FILELIST, ">".$filelistfile;
 	
-	my $shared = {
+	my $session = {
 		indexdbpath 	=> $indexdbpath,
-		filesdbpath 	=> $filesdbpath,
+		locationsdbpath 	=> $locationsdbpath,
 		titlesdbpath 	=> $titlesdbpath,
 		indexdb 	=> { },
-		filesdb 	=> { },
+		locationsdb 	=> { },
 		titlesdb 	=> { },
 		cachedb 	=> { },
 		filemask 	=> $filemask,
@@ -603,15 +640,24 @@ sub makeindex {
 		autoignore	=> 1,
 		ignorelimit	=> $self->{ignorelimit} || (2/3),
 		level		=> $self->{level},	
-		url_exclude 	=> $self->{url_exclude}
+		url_exclude 	=> $self->{url_exclude},
+		file_reader  => $self->{file_reader},
+		use_inode    => $self->{use_inode},
+		no_reset     => $self->{no_reset},
 	};
 	
 	unlink $indexdbpath."~"; 
-	unlink $filesdbpath."~"; 
+	unlink $locationsdbpath."~"; 
 	unlink $titlesdbpath."~";
-	tie_hash($shared->{indexdb}, $indexdbpath."~" )   or die "$indexdbpath: $!\n";
-	tie_hash($shared->{filesdb}, $filesdbpath."~" )   or die $!;
-	tie_hash($shared->{titlesdb},$titlesdbpath."~" ) or die $!;
+	if( $self->{no_reset} )
+	{
+		copy( $indexdbpath, $indexdbpath."~" );
+		copy( $locationsdbpath, $locationsdbpath."~" );
+		copy( $titlesdbpath, $titlesdbpath."~" );
+	}
+	tie_hash($session->{indexdb}, $indexdbpath."~" )   or die "$indexdbpath: $!\n";
+	tie_hash($session->{locationsdb}, $locationsdbpath."~" )   or die $!;
+	tie_hash($session->{titlesdb},$titlesdbpath."~" ) or die $!;
 
 	my $ignorefile = $indexdbpath;
 	$ignorefile =~ s/(\.db)?$/\.stopwords/;
@@ -620,50 +666,130 @@ sub makeindex {
 		while (<F>) {
 			chomp;
 			s/^\s+|\s+$//g;
-			$shared->{ignoreword}->{$_} = 1;
+			$session->{ignoreword}->{$_} = 1;
 		}
 		close F;
-		my $count = int keys %{ $shared->{ignoreword} };
+		my $count = int keys %{ $session->{ignoreword} };
 		DEBUG("using stop-words from $ignorefile ($count words)\n");
-		$shared->{autoignore} = 0;
+		$session->{autoignore} = 0;
 	}
+	$session->{ignorefile} = $ignorefile;
+	
 	my $time = time();
+	
+	$session->{start_time} = $time;
+	
+	$self->{session} = $session;
+}
+
+sub index_default_locations
+{
+	my $self = shift;
+	my $session = $self->{session};
+	return unless $session; 
+
+	my $dirs 	= $self->{dirs};
+	my $urls	= $self->{urls};
 	my $filecount = 0;
 	DEBUG("Counting files...\n") if int @$dirs;
-       	for $dir( sort  @$dirs) { $filecount += IndexDir($shared, $dir, 1); }
-	$shared->{filecount} = $filecount;
-	for $dir( sort  @$dirs) { IndexDir($shared, $dir); }
-	for my $url( sort  @$urls) { IndexWeb($shared, $url); }
-	FlushCache($shared->{cachedb}, $shared->{indexdb}, $shared);
-	$time = time()-$time;
-	DEBUG("$shared->{bytes} bytes read, $shared->{count} files processed in $time seconds\n");
-	untie_hash($shared->{indexdb});
-	untie_hash($shared->{filesdb});
-	untie_hash($shared->{titlesdb});
+	my $dir;
+       	for $dir( sort  @$dirs) { $filecount += IndexDir($session, $dir, 1); }
+	$session->{filecount} = $filecount;
+
+	for $dir( sort  @$dirs) { IndexDir($session, $dir); }
+	for my $url( sort  @$urls) { IndexWeb($session, $url); }
+}
+
+sub index_content
+{
+	my $self = shift;
+	my $session = $self->{session};
+	return unless $session; 
+	my $info = shift;
+	if( ref($info) ne 'HASH'  )
+	{	warn("usage: \$src->index_content( { content=>'...', id=>'...', title=>'...' } )\n");
+		return undef;
+	}
+	IndexFile( $session, $info->{id}, $info->{content}, $info->{title} );	
+	return 1;
+}
+
+sub rollback_indexing_session
+{
+	my $self = shift;
+	my $session = $self->{session};
+	return unless $session; 
+	untie_hash($session->{indexdb});
+	untie_hash($session->{locationsdb});
+	untie_hash($session->{titlesdb});
+	my $indexdbpath = $self->{indexdbpath};
+	my $locationsdbpath = $self->{locationsdbpath};
+	my $titlesdbpath = $self->{titlesdbpath};
+	
+	unlink $indexdbpath."~"; 
+	unlink $locationsdbpath."~";
+	unlink $titlesdbpath."~"; 
+	$self->{session} = undef;
+}
+
+sub DESTROY
+{
+	my $self = shift;
+	$self->rollback_indexing_session;
+}
+
+sub commit_indexing_session
+{
+	my $self = shift;
+	my $session = $self->{session};
+	return unless $session; 
+	FlushCache($session->{cachedb}, $session->{indexdb}, $session);
+	my $time = time()-$session->{start_time};
+	DEBUG("$session->{bytes} bytes read, $session->{count} files processed in $time seconds\n");
+	untie_hash($session->{indexdb});
+	untie_hash($session->{locationsdb});
+	untie_hash($session->{titlesdb});
+	
+	my $indexdbpath = $self->{indexdbpath};
+	my $locationsdbpath = $self->{locationsdbpath};
+	my $titlesdbpath = $self->{titlesdbpath};
 	
 	rename $indexdbpath."~", $indexdbpath; 
-	rename $filesdbpath."~", $filesdbpath ;
+	rename $locationsdbpath."~", $locationsdbpath ;
 	rename $titlesdbpath."~", $titlesdbpath;
-	close FILELIST;
-	if ( $shared->{autoignore} ) {
+	close $session->{listfh};
+	if ( $session->{autoignore} ) {
+		my $ignorefile = $session->{ignorefile};
 		open  F, ">".$ignorefile; #write *-stopwords.dat file
-		print F join( "\n", sort keys %{ $shared->{ignoreword} } );
+		print F join( "\n", sort keys %{ $session->{ignoreword} } );
 		close F;
 	}
-
-	return;	
+	
+	$self->{session} = undef;
  }
 
+ 
+ 
+sub makeindex
+{
+	my $self = shift;
+	$self->start_indexing_session();
+	$self->index_default_locations();
+	$self->commit_indexing_session();
+}
+ 
 
 sub IndexDir {
-	my ($shared, $dir, $only_recurse) = @_;
-	my $followsymlinks = $shared->{followsymlinks};
+	my ($session, $dir, $only_recurse) = @_;
+	my $followsymlinks = $session->{followsymlinks};
+	my $file_reader = $session->{file_reader};
 	opendir D, $dir;
 #	DEBUG "D $dir\n";
 	my @files = readdir D;
 	close D;
 	my $e;
 	my $count = 0;
+	my $text;
 	for $e(@files) {
 		next if $e =~ /^\.\.?/;
 		my $path = $dir."/".$e;
@@ -671,15 +797,23 @@ sub IndexDir {
 			unless ($followsymlinks) {
 				next if -l $path ;
 			}
-			$count += IndexDir($shared,$path, $only_recurse);
+			$count += IndexDir($session,$path, $only_recurse);
 		}
 		elsif (-f _ ) {
-			my $filemask = $shared->{filemask};
+			my $filemask = $session->{filemask};
 			if ($filemask) {
 				next unless $e =~ $filemask;
 			}
-			unless ($only_recurse) {
-				IndexFile($shared,$path);
+			unless ($only_recurse) 
+			{
+				if( $file_reader )
+				{
+					$text = $file_reader->read( $path );
+					IndexFile($session,$path,$text);
+				} else
+				{
+					IndexFile($session,$path);
+				}
 			}
 			$count ++;
 		}
@@ -690,13 +824,25 @@ sub IndexDir {
 
 
 sub IndexFile {
-	my ($shared, $file, $text) = @_;
-	my $cachedb = $shared->{cachedb};
-	my $filesdb = $shared->{filesdb};
-	my $key = $shared->{current_key};
-	my $no_of_files = $shared->{filecount};
-	DEBUG $shared->{count}+1, "/$no_of_files $file (id=$key)\n";
-	my $fh = $shared->{listfh};
+	my ($session, $file, $text, $title ) = @_;
+	my $cachedb = $session->{cachedb};
+	my $locationsdb = $session->{locationsdb};
+	my $key = $session->{current_key};
+	if( $session->{use_inode} )
+	{
+		$key = (stat($file))[1];
+	}
+	my $no_of_files = $session->{filecount};
+	if(  $session->{no_reset} )
+	{
+		if( exists $locationsdb->{pack"xN",$key} )
+		{
+			warn("key $key already in locationsdb. Skipping\n");
+			return;
+		}
+	}
+	DEBUG $session->{count}+1, "/$no_of_files $file (id=$key)\n";
+	my $fh = $session->{listfh};
 	print $fh "$key\t$file\n";
 	local $/;
 	unless (defined $text) {
@@ -708,44 +854,47 @@ sub IndexFile {
 	my $filesize =  length($text);
 	if ($file =~ /\.s?htm.?/i ) {
 		$text =~ /<title[^>]*>([^<]+)<\/title/i ;
-		my $title = $1;
+		$title = $1;
 		$title =~ s/\s+/ /g;
-		$shared->{titlesdb}->{pack"xn",$key} = $title;  # put title in db
-		DEBUG("* \"$title\"\n");
 		$text =~ s/<[^>]*>//g; 		# strip all HTML tags
 	}
+	if( defined $title )
+	{
+		$session->{titlesdb}->{pack"xN",$key} = $title;  # put title in db
+		DEBUG("* \"$title\"\n");
+	}
 	# index all the words under the current file-id
-	my($wordsIndexed) = &IndexWords($cachedb, $text,$key, $shared);
-	$shared->{current_key}++;
+	my($wordsIndexed) = &IndexWords($cachedb, $text,$key, $session);
+	$session->{current_key}++;
 	DEBUG "* $wordsIndexed words\n";
 	
 	# map file-id (key) to this filename
-	$filesdb->{pack"xn",$key} = $file;   	# leading null is here for 
+	$locationsdb->{pack"xN",$key} = $file;   	# leading null is here for 
 						# historical reasons :-)
-	$shared->{bytes} += $filesize;
-	$shared->{count}++;
-	$shared->{_temp_size} += $filesize;
-	if ($shared->{_temp_size} > 2000000 ) {
+	$session->{bytes} += $filesize;
+	$session->{count}++;
+	$session->{_temp_size} += $filesize;
+	if ($session->{_temp_size} > 2000000 ) {
 		my $rc = 0;
-		$rc = FlushCache($cachedb, $shared->{indexdb}, $shared);
+		$rc = FlushCache($cachedb, $session->{indexdb}, $session);
 		
 		if (! $rc ) {
-			tie_hash($shared->{indexdb}, $shared->{indexdbpath}) or die $!;
-			untie_hash($shared->{indexdb});
-			$rc = FlushCache($cachedb, $shared->{indexdb}, $shared);
+			tie_hash($session->{indexdb}, $session->{indexdbpath}) or die $!;
+			untie_hash($session->{indexdb});
+			$rc = FlushCache($cachedb, $session->{indexdb}, $session);
 			die $! if not $rc;
 		}
 		
-		$shared->{_temp_size} = 0;
-		$shared->{cachedb} = {};
+		$session->{_temp_size} = 0;
+		$session->{cachedb} = {};
 	}
 }
 
 sub IndexWords {
-    my ($db, $words, $fileKey, $shared) = @_;
+    my ($db, $words, $fileKey, $session) = @_;
 #      hash  content  file-id   options	
     my (%worduniq); # for unique-ifying word list
-    my $minwordsize = $shared->{minwordsize};	    
+    my $minwordsize = $session->{minwordsize};	    
     my (@words) = split( /[^a-zA-Z0-9\xc0-\xff\+\/\_]+/, lc $words); # split into an array of words
     @words = grep { $worduniq{$_}++ == 0 } 		# remove duplicates
              grep { length  > $minwordsize } 		# must be longer than one character
@@ -755,7 +904,7 @@ sub IndexWords {
 					#   "  foreach (sort @words) { "
     for (@words) {     			# no need to sort here, 
 	my $a = $db->{$_};		# we will sort when cache is flushed 
-	$a .= pack "n",$fileKey;	# appending packed file-id's
+	$a .= pack "N",$fileKey;	# appending packed file-id's
         $db->{$_} = $a;
     }
     return int @words;
@@ -764,7 +913,7 @@ sub IndexWords {
 
 
 sub FlushCache { 
-	my ($source, $dest, $shared) = @_;
+	my ($source, $dest, $session) = @_;
 		# flush source hashe into dest....  
 		# %$dest is supposed to be tied, otherwise the whole
        		# thing doens't make much sense... :-)	
@@ -775,28 +924,28 @@ sub FlushCache {
 		die "error: 0 words in cache\n";
 	}
 #	my $wordcount = int keys %$dest;
-#	if ($wordcount < $shared->{wordcount}) {
-#		warn "indexdb has lost entries (now $wordcount, were $shared->{wordcount}) \n";
+#	if ($wordcount < $session->{wordcount}) {
+#		warn "indexdb has lost entries (now $wordcount, were $session->{wordcount}) \n";
 #		return undef;
 #	}
-#	$shared->{wordcount} = $wordcount;
+#	$session->{wordcount} = $wordcount;
 	
 #	DEBUG("$wordcount words in database\n");
 	my $objref = tied %$dest ;
 	DEBUG("flushing $scount words into $dest ($objref)\n");
 	
-	my $filecount = $shared->{count};
-	my $autoignore = $shared->{autoignore};
-	my $ignorethreshold = int ( $filecount * $shared->{ignorelimit} );
+	my $filecount = $session->{count};
+	my $autoignore = $session->{autoignore};
+	my $ignorethreshold = int ( $filecount * $session->{ignorelimit} );
 		
 	my $w;
 	
 	WORD:
 	for $w(sort keys %$source) {
 		my $data = $source->{$w};
-		if ($shared->{ignoreword}->{$w} ) {
+		if ($session->{ignoreword}->{$w} ) {
 			DEBUG("ignoring '$w' \n");
-			$data = pack("n*", ( 0 ) ); # id = 0 means $w is a stop-word
+			$data = pack("N*", ( 0 ) ); # id = 0 means $w is a stop-word
 		}
 		elsif (defined $dest->{$w}) {
 			my %uniq = ();
@@ -817,8 +966,8 @@ sub FlushCache {
 				DEBUG("word '$w' will be ignored (found in $keycount of $filecount files)\n");
 				# ignored words are associated to file-id 0
 ##				@keys = ( 0 );
-				$keys = pack("n*", 0);
-				$shared->{ignoreword}->{$w} = 1;
+				$keys = pack("N*", 0);
+				$session->{ignoreword}->{$w} = 1;
 			}
 ##			@keys = grep { $uniq{$_}++ == 0} @keys;
 ##			$data = pack("n*", @keys);
@@ -827,10 +976,10 @@ sub FlushCache {
 			
 ##			if ($verbose_flag && ( $w eq "the" ) )  {
 ##				my $len = int(@keys);
-##				if ($len < $shared->{status_THE} ) {
+##				if ($len < $session->{status_THE} ) {
 ##						die "panic: problem with word 'the'";
 ##				}
-##				$shared->{status_THE} = $len;
+##				$session->{status_THE} = $len;
 ##				DEBUG("word 'the' found in $len files \n");
 ##			}
 
@@ -847,11 +996,11 @@ sub FlushCache {
 	DEBUG("$ucount words updated, $acount new words added\n");
 	if ($debug_flag) {
 		my $wordcount = int keys %$dest;
-		if ($wordcount < $shared->{wordcount}) {
-			warn "indexdb has lost entries (now $wordcount, were $shared->{wordcount}) \n";
+		if ($wordcount < $session->{wordcount}) {
+			warn "indexdb has lost entries (now $wordcount, were $session->{wordcount}) \n";
 			return undef;
 		}
-		$shared->{wordcount} = $wordcount;
+		$session->{wordcount} = $wordcount;
 		DEBUG("$wordcount words in database\n");
 	}
 	return 1;
@@ -862,38 +1011,38 @@ sub FlushCache {
 
 
 sub IndexWeb {
-	my ($shared, $url) = @_;
-	use MMM::Text::Search::Inet;
+	my ($session, $url) = @_;
+	require MMM::Text::Search::Inet;
 	my $req = new HTTPRequest { AutoRedirect => 1 };
 	my %fetched = ();
 	$req->set_url($url);
 	my $host = $req->host();
-	$shared->{req} = $req;
-	$shared->{fetched} = \%fetched;
-	$shared->{host} = $host;
-	my $deadlinksfile = $shared->{indexdbpath};
+	$session->{req} = $req;
+	$session->{fetched} = \%fetched;
+	$session->{host} = $host;
+	my $deadlinksfile = $session->{indexdbpath};
 	$deadlinksfile =~ s/(\.db)?$/\.deadlinks/;
 	open DL, ">".$deadlinksfile;
-	$shared->{deadlinksfh} = \*DL;
-	recursive_fetch($shared, $url, "", 0);
+	$session->{deadlinksfh} = \*DL;
+	recursive_fetch($session, $url, "", 0);
 }
 
 
 
 sub recursive_fetch {
-	my ($shared, $url, $parent, $level) = @_;
-	my $req = $shared->{req};
+	my ($session, $URL, $parent, $level) = @_;
+	my $req = $session->{req};
 	$req->reset();
-	$req->set_url($url);
+	$req->set_url($URL);
 	my $url =  $req->url();
-	return unless $req->host() eq $shared->{host};
-	return if $shared->{fetched}->{$url};
-	$shared->{fetched}->{$url} = 1;
+	return unless $req->host() eq $session->{host};
+	return if $session->{fetched}->{$url};
+	$session->{fetched}->{$url} = 1;
 	return unless $req->get_page();
 	my $status =  $req->status();
 	DEBUG( ">>> $url ($status)\n");
 	if ( $status != 200 ) {
-		my $fh = $shared->{deadlinksfh};
+		my $fh = $session->{deadlinksfh};
 		my $url = $req->url();
 		print $fh $status, "\t",
 			$url, "(", $req->{_URL},")",
@@ -903,12 +1052,12 @@ sub recursive_fetch {
 	my $base =  $req->base_url();
 	my $content_ref = $req->content_ref();
 	my $header  = $req->header();
-	IndexFile($shared, $url, $$content_ref);
-	return if ($shared->{level} && $level >= $shared->{level});
+	IndexFile($session, $url, $$content_ref);
+	return if ($session->{level} && $level >= $session->{level});
 	$$content_ref =~ s/<!--.*?-->//gs;	#remove comments
 	my @links = $$content_ref =~/href=([^>\s]+)/ig; #extract hyperlinks
 	my $count = 0;
-	my $exclude_re = $shared->{url_exclude};
+	my $exclude_re = $session->{url_exclude};
 	for(@links) {
 		s/\"|\'//g;
 		next if m/^(ftp|mailto|gopher|news):/;	
@@ -916,7 +1065,7 @@ sub recursive_fetch {
 		my $link = /^http/ ? $_ : join("/",$base,$_);
 		$link =~ s/#.*//;
 		$count++;
-		recursive_fetch($shared,$link, $url, $level +  1); 
+		recursive_fetch($session,$link, $url, $level +  1); 
 	}
 }
 
